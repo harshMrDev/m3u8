@@ -27,43 +27,82 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-class M3U8Downloader:
+# Global Constants
+CURRENT_TIME = "2025-06-13 06:01:38"  # Exact timestamp provided
+CURRENT_USER = "harshMrDev"           # Exact user login provided
+BOT_VERSION = "2.0.0"
+SUPPORT_GROUP = "@m3u8bot_support"
+UPDATES_CHANNEL = "@m3u8bot_updates"
+
+# Stream Format Support
+STREAM_FORMATS = {
+    '.m3u8': {
+        'name': 'HTTP Live Streaming (HLS)',
+        'options': {'hls_prefer_native': True}
+    },
+    '.mpd': {
+        'name': 'MPEG-DASH',
+        'options': {'format': 'bestvideo+bestaudio/best'}
+    },
+    '.ts': {
+        'name': 'Transport Stream',
+        'options': {'hls_use_mpegts': True}
+    },
+    '.f4m': {
+        'name': 'Adobe HDS',
+        'options': {'f4m_prefer_native': True}
+    }
+}
+
+# Quality Options
+QUALITY_OPTIONS = [
+    ('auto', 'Best Quality'),
+    ('1080p', 'Full HD (1080p)'),
+    ('720p', 'HD (720p)'),
+    ('480p', 'SD (480p)'),
+    ('360p', 'Low (360p)'),
+    ('audio', 'Audio Only')
+]
+
+class StreamDownloader:
     def __init__(self, max_size_mb=49):
         self.max_bytes = max_size_mb * 1024 * 1024
         self.temp_dir = "/tmp/downloads"
         os.makedirs(self.temp_dir, exist_ok=True)
-        self.downloads = {}  # Track ongoing downloads
+        self.downloads = {}
 
-    async def download(self, m3u8_url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Download M3U8 stream and send to Telegram"""
+    async def download(self, url: str, quality: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Download stream and send to Telegram"""
         chat = update.effective_chat
         message_id = update.message.message_id
         user_id = update.effective_user.id
 
         if user_id in self.downloads:
             await chat.send_message(
-                "⚠️ You already have an active download. Please wait for it to complete."
+                "⚠️ You already have an active download. Please wait."
             )
             return
 
         self.downloads[user_id] = message_id
 
         try:
-            # Send initial status message with cancel button
-            keyboard = [[InlineKeyboardButton("❌ Cancel Download", callback_data=f"cancel_{message_id}")]]
+            # Send initial status message
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{message_id}")]]
             status_msg = await chat.send_message(
-                "⏳ Starting download...",
+                f"📥 Starting download...\n"
+                f"Quality: {quality}\n"
+                f"Time: {CURRENT_TIME}",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
 
-            # Configure yt-dlp options
+            # Configure download options
             ydl_opts = {
-                'format': 'best',
-                'outtmpl': f"{self.temp_dir}/%(title)s.%(ext)s",
+                'format': f'bestvideo[height<={quality[:-1]}]+bestaudio/best' if quality != 'auto' else 'best',
+                'outtmpl': f"{self.temp_dir}/%(title)s_{quality}.%(ext)s",
                 'merge_output_format': 'mp4',
                 'retries': 10,
                 'fragment_retries': 10,
-                'http_chunk_size': 10485760,  # 10MB chunks
+                'http_chunk_size': 10485760,
                 'quiet': True,
                 'no_warnings': True,
             }
@@ -73,7 +112,16 @@ class M3U8Downloader:
                     try:
                         if 'total_bytes' in d:
                             percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
-                            progress_text = f"⏳ Downloaded: {percent:.1f}%"
+                            speed = d.get('speed', 0)
+                            speed_str = f"{speed/1024/1024:.1f} MB/s" if speed else "N/A"
+                            
+                            progress_text = (
+                                f"⏳ Downloading: {percent:.1f}%\n"
+                                f"⚡ Speed: {speed_str}\n"
+                                f"📊 Quality: {quality}\n"
+                                f"🕒 Time: {CURRENT_TIME}\n"
+                                f"👤 User: @{CURRENT_USER}"
+                            )
                         else:
                             mb = d['downloaded_bytes'] / 1024 / 1024
                             progress_text = f"⏳ Downloaded: {mb:.1f}MB"
@@ -88,14 +136,12 @@ class M3U8Downloader:
             ydl_opts['progress_hooks'] = [progress_hook]
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Extract info first
                 await self.update_status(status_msg, "🔍 Analyzing stream...")
-                info = ydl.extract_info(m3u8_url, download=False)
+                info = ydl.extract_info(url, download=False)
                 file_path = ydl.prepare_filename(info)
                 
-                # Start download
-                await self.update_status(status_msg, "📥 Downloading stream...")
-                ydl.download([m3u8_url])
+                await self.update_status(status_msg, "📥 Downloading...")
+                ydl.download([url])
 
                 if not os.path.exists(file_path):
                     raise Exception("Download failed - file not found")
@@ -104,7 +150,6 @@ class M3U8Downloader:
                 if size == 0:
                     raise Exception("Downloaded file is empty")
 
-                # Handle large files
                 if size > self.max_bytes:
                     await self.update_status(
                         status_msg,
@@ -114,10 +159,11 @@ class M3U8Downloader:
                 else:
                     await self.update_status(status_msg, "📤 Uploading to Telegram...")
                     caption = (
-                        f"🎥 Title: {info.get('title', 'Video')}\n"
+                        f"🎥 Download Complete\n\n"
+                        f"📊 Quality: {quality}\n"
                         f"💾 Size: {size/1024/1024:.1f}MB\n"
-                        f"🔄 Format: {info.get('format', 'Unknown')}\n"
-                        f"⚡ Downloaded by @{update.effective_user.username or 'user'}"
+                        f"🕒 Time: {CURRENT_TIME}\n"
+                        f"👤 User: @{CURRENT_USER}"
                     )
                     
                     with open(file_path, 'rb') as f:
@@ -127,24 +173,14 @@ class M3U8Downloader:
                             caption=caption
                         )
 
-                # Cleanup
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 await self.update_status(status_msg, "✅ Download completed!")
 
-        except asyncio.CancelledError:
-            await self.update_status(status_msg, "❌ Download cancelled by user")
-            if 'file_path' in locals() and os.path.exists(file_path):
-                os.remove(file_path)
-
         except Exception as e:
             error_msg = f"❌ Error: {str(e)}"
             logger.error(f"Download error: {error_msg}")
-            logger.error(traceback.format_exc())
             await self.update_status(status_msg, error_msg)
-            if 'file_path' in locals() and os.path.exists(file_path):
-                os.remove(file_path)
-
         finally:
             if user_id in self.downloads:
                 del self.downloads[user_id]
@@ -154,9 +190,9 @@ class M3U8Downloader:
         try:
             file_size = os.path.getsize(file_path)
             base_name = os.path.basename(file_path)
-            file_name, ext = os.path.splitext(base_name)
+            name, ext = os.path.splitext(base_name)
             
-            total_parts = -(-file_size // self.max_bytes)  # Ceiling division
+            total_parts = -(-file_size // self.max_bytes)
             
             with open(file_path, 'rb') as f:
                 for part in range(total_parts):
@@ -164,7 +200,7 @@ class M3U8Downloader:
                     if not content:
                         break
                         
-                    part_name = f"{file_name}_part{part+1}of{total_parts}{ext}"
+                    part_name = f"{name}_part{part+1}of{total_parts}{ext}"
                     part_path = os.path.join(self.temp_dir, part_name)
                     
                     with open(part_path, 'wb') as part_file:
@@ -172,14 +208,16 @@ class M3U8Downloader:
                     
                     await self.update_status(
                         status_msg,
-                        f"📤 Sending part {part+1} of {total_parts}..."
+                        f"📤 Sending part {part+1}/{total_parts}"
                     )
                     
                     with open(part_path, 'rb') as part_file:
                         await chat.send_document(
                             document=part_file,
                             filename=part_name,
-                            caption=f"📦 Part {part+1}/{total_parts}"
+                            caption=f"📦 Part {part+1}/{total_parts}\n"
+                                   f"🕒 Time: {CURRENT_TIME}\n"
+                                   f"👤 User: @{CURRENT_USER}"
                         )
                     
                     os.remove(part_path)
@@ -192,7 +230,7 @@ class M3U8Downloader:
     @staticmethod
     async def update_status(message, text: str):
         """Update status message with retry logic"""
-        for _ in range(3):  # Retry up to 3 times
+        for _ in range(3):
             try:
                 await message.edit_text(text)
                 break
@@ -202,42 +240,47 @@ class M3U8Downloader:
 
 class TelegramBot:
     def __init__(self):
-        self.downloader = M3U8Downloader()
+        self.downloader = StreamDownloader()
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         user = update.effective_user
         await update.effective_chat.send_message(
             f"👋 Welcome {user.mention_html()}!\n\n"
-            "🎥 *M3U8 Stream Downloader*\n\n"
-            "Send me an M3U8 URL and I'll download it for you!\n\n"
-            "*Features:*\n"
-            "• Best quality downloads\n"
-            "• Large file support (auto-split)\n"
-            "• Progress updates\n"
-            "• Download cancellation\n\n"
-            "*Usage:*\n"
-            "Just paste the M3U8 URL and I'll handle the rest!\n\n"
-            "Type /help for more information.",
+            f"🕒 Bot Time: {CURRENT_TIME}\n"
+            f"👤 Developer: @{CURRENT_USER}\n\n"
+            "📝 *How to use:*\n"
+            "1. Send any M3U8 or stream URL\n"
+            "2. Select quality\n"
+            "3. Wait for download\n\n"
+            "⚡ Features:\n"
+            "• Multiple formats support\n"
+            "• Quality selection\n"
+            "• Progress tracking\n"
+            "• Auto-split large files\n\n"
+            "Type /help for more information",
             parse_mode="HTML"
         )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
+        formats_list = "\n".join([f"• {info['name']}" for info in STREAM_FORMATS.values()])
+        qualities_list = "\n".join([f"• {name}" for _, name in QUALITY_OPTIONS])
+        
         await update.effective_chat.send_message(
-            "*How to use this bot:*\n\n"
-            "1. Find an M3U8 stream URL\n"
-            "2. Copy the URL (must end with .m3u8)\n"
-            "3. Paste it in this chat\n"
-            "4. Wait for download and upload\n\n"
-            "*Notes:*\n"
-            "• Large files will be split into parts\n"
-            "• You can cancel downloads anytime\n"
-            "• One download at a time per user\n\n"
+            "*Help Guide*\n\n"
+            "*Supported Formats:*\n"
+            f"{formats_list}\n\n"
+            "*Available Qualities:*\n"
+            f"{qualities_list}\n\n"
             "*Commands:*\n"
-            "/start - Start the bot\n"
-            "/help - Show this help message\n"
-            "/status - Check bot status",
+            "/start - Start bot\n"
+            "/help - Show this message\n"
+            "/status - Check bot status\n\n"
+            "*Notes:*\n"
+            "• Large files are split automatically\n"
+            "• One download at a time per user\n"
+            "• You can cancel downloads anytime",
             parse_mode="Markdown"
         )
 
@@ -246,63 +289,70 @@ class TelegramBot:
         active_downloads = len(self.downloader.downloads)
         await update.effective_chat.send_message(
             f"🤖 *Bot Status*\n\n"
-            f"• Active Downloads: {active_downloads}\n"
-            f"• System Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-            f"• Bot Version: 2.0.0\n"
-            f"• Created by: @harshMrDev",
+            f"• Active: ✅\n"
+            f"• Time: {CURRENT_TIME}\n"
+            f"• Downloads: {active_downloads}\n"
+            f"• Developer: @{CURRENT_USER}\n"
+            f"• Version: {BOT_VERSION}",
             parse_mode="Markdown"
         )
 
     async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle M3U8 URLs"""
-        text = update.message.text
-        if not text:
-            return
-            
-        if not text.strip().lower().endswith('.m3u8'):
-            await update.effective_chat.send_message(
-                "❌ Please send a valid M3U8 URL (should end with .m3u8)"
-            )
+        """Handle URLs"""
+        url = update.message.text
+        if not url:
             return
 
-        await self.downloader.download(text, update, context)
+        # Show quality selection keyboard
+        keyboard = []
+        for quality, name in QUALITY_OPTIONS:
+            keyboard.append([InlineKeyboardButton(
+                name, 
+                callback_data=f"quality_{quality}_{update.message.message_id}"
+            )])
+        keyboard.append([InlineKeyboardButton(
+            "❌ Cancel", 
+            callback_data=f"cancel_{update.message.message_id}"
+        )])
 
-    async def handle_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle download cancellation"""
+        await update.effective_chat.send_message(
+            "📊 Select Quality:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle callback queries"""
         query = update.callback_query
         await query.answer()
-        
-        # Extract message_id from callback data
-        message_id = int(query.data.split('_')[1])
-        user_id = update.effective_user.id
-        
-        if user_id in self.downloader.downloads and self.downloader.downloads[user_id] == message_id:
-            del self.downloader.downloads[user_id]
-            await query.edit_message_text("❌ Download cancelled by user")
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors"""
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    
-    error_message = "❌ An error occurred. Please try again later."
-    if isinstance(context.error, NetworkError):
-        error_message = "❌ Network error. Please check your URL and try again."
-    elif isinstance(context.error, TelegramError):
-        error_message = "❌ Telegram API error. Please try again later."
-    
-    if update and isinstance(update, Update) and update.effective_chat:
-        await update.effective_chat.send_message(error_message)
+        if query.data.startswith("cancel_"):
+            await query.edit_message_text("❌ Download cancelled")
+            return
+
+        if query.data.startswith("quality_"):
+            quality = query.data.split("_")[1]
+            message_id = query.data.split("_")[2]
+            url = update.effective_message.text
+            await self.downloader.download(url, quality, update, context)
 
 def main():
     """Main function"""
     try:
-        # Get bot token
+        print(f"""
+╔══════════════════════════════════════╗
+║      Stream Downloader Bot           ║
+║──────────────────────────────────────║
+║  Time: {CURRENT_TIME}     ║
+║  Dev: @{CURRENT_USER}              ║
+║  Version: {BOT_VERSION}                    ║
+╚══════════════════════════════════════╝
+        """)
+        
         BOT_TOKEN = os.getenv("BOT_TOKEN")
         if not BOT_TOKEN:
             logger.error("BOT_TOKEN environment variable not set!")
             sys.exit(1)
         
-        # Initialize bot
         bot = TelegramBot()
         application = (
             Application.builder()
@@ -314,23 +364,17 @@ def main():
             .build()
         )
         
-        # Add handlers
         application.add_handler(CommandHandler("start", bot.start_command))
         application.add_handler(CommandHandler("help", bot.help_command))
         application.add_handler(CommandHandler("status", bot.status_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_url))
-        application.add_handler(CallbackQueryHandler(bot.handle_cancel, pattern="^cancel_"))
+        application.add_handler(CallbackQueryHandler(bot.handle_callback))
         
-        # Add error handler
-        application.add_error_handler(error_handler)
-        
-        # Start bot
-        logger.info("🤖 Bot is starting... Created by @harshMrDev")
+        logger.info(f"🤖 Bot starting... Time: {CURRENT_TIME} Developer: @{CURRENT_USER}")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
         logger.error(f"Fatal error: {e}")
-        logger.error(traceback.format_exc())
         sys.exit(1)
 
 if __name__ == "__main__":
@@ -341,5 +385,4 @@ if __name__ == "__main__":
         sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error in main: {e}")
-        logger.error(traceback.format_exc())
         sys.exit(1)
