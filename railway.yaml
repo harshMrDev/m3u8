@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: m3u8-telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python m3u8_telegram_bot.py
+    healthcheckEnabled: false
