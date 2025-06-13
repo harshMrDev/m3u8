@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ['python39', 'gcc', 'ffmpeg']
+
+[phases.install]
+cmds = ['python -m pip install --upgrade pip', 'pip install -r requirements.txt']
+
+[start]
+cmd = 'python m3u8_telegram_bot.py'
